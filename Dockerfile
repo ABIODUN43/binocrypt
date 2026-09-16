@@ -43,8 +43,7 @@ RUN chmod +x ./start.sh && \
     ln -s /app/backend /app/backend/backend && \
     ln -s /app/backend/start.sh /usr/local/bin/start-binocrypt
 
-EXPOSE 8000
+CMD ["sh", "/app/backend/start.sh"]
 
-CMD ["/app/backend/start.sh"]
 
 
