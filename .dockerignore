@@ -1,0 +1,15 @@
+﻿**/.git
+**/.gitignore
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.vscode
+**/.idea
+backend/.venv
+backend/venv
+backend/binocrypt.db
+frontend/.vite
+frontend/dist
