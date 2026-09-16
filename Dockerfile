@@ -39,13 +39,12 @@ COPY backend/ ./backend/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 WORKDIR /app/backend
-RUN chmod +x ./start.sh
+RUN chmod +x ./start.sh && \
+    ln -s /app/backend /app/backend/backend && \
+    ln -s /app/backend/start.sh /usr/local/bin/start-binocrypt
 
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:${PORT}/api/health || exit 1
-
 CMD ["/app/backend/start.sh"]
+
 
