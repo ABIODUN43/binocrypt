@@ -1,4 +1,4 @@
-﻿# ==========================================
+# ==========================================
 # STAGE 1: Build Frontend Single Page App
 # ==========================================
 FROM node:20-alpine AS frontend-builder
@@ -39,6 +39,7 @@ COPY backend/ ./backend/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 WORKDIR /app/backend
+RUN chmod +x ./start.sh
 
 EXPOSE 8000
 
@@ -46,4 +47,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT}/api/health || exit 1
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["/app/backend/start.sh"]
+
