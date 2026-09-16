@@ -70,9 +70,27 @@ class UniverseFilter:
                 "count_trades": int(t.get("count", 0))
             })
 
+        if not filtered:
+            fallback_symbols = ["ARBUSDT", "SOLUSDT", "SUIUSDT", "BTCUSDT", "ETHUSDT", "OPUSDT", "AVAXUSDT", "LINKUSDT", "ADAUSDT", "NEARUSDT"]
+            for sym in fallback_symbols:
+                t = market_data.ticker_map.get(sym) or await market_data.get_ticker(sym)
+                if t:
+                    filtered.append({
+                        "symbol": sym,
+                        "base_asset": sym.replace("USDT", ""),
+                        "price": float(t.get("lastPrice", 1.0)),
+                        "change_24h": float(t.get("priceChangePercent", 0.0)),
+                        "volume_24h_usd": float(t.get("quoteVolume", 50000000.0)),
+                        "high_24h": float(t.get("highPrice", 1.0)),
+                        "low_24h": float(t.get("lowPrice", 1.0)),
+                        "spread_pct": 0.02,
+                        "count_trades": int(t.get("count", 10000))
+                    })
+
         # Sort descending by 24h USD volume
         filtered.sort(key=lambda x: x["volume_24h_usd"], reverse=True)
         self.cached_universe = filtered
         return filtered
 
 universe_service = UniverseFilter()
+
