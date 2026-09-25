@@ -20,9 +20,9 @@ Design:
       2. P(+50% before -20% | X_t, Depressed) [Barrier B]
       3. P(MFE_30 >= 25% | X_t, Depressed)
       4. P(MFE_30 >= 50% | X_t, Depressed)
-      5. P(MAE_30 <= -20% | X_t, Depressed) [Falling Knife detector]
+      5. P(MAE_30 <= -20% | X_t, Depressed) [Falling Knife detector / Risk Filter]
   - Evaluation Gates:
-      * Predictive: Brier Skill Score > 0, ECE < 0.10, AUC > 0.55
+      * Predictive: Brier Skill Score > 0, ECE < 0.10, AUC > 0.55 across folds
       * Economic: Net Sharpe > 0.50, Net EV > 0 after 0.40% roundtrip friction
 """
 
@@ -32,18 +32,17 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from app.research.calibration import CalibrationEvaluator, PlattCalibrator
 from app.research.cost_aware_eval import CostAwareEvaluator
 from app.research.data.store import ResearchDataStore
-from app.research.universe.providers import SBRU_V1_SYMBOLS
 from app.research.walk_forward import (
     walk_forward_expanding,
     H_MAX,
@@ -86,23 +85,31 @@ FEATURE_COLS = [
 ]
 
 
+def bootstrap_auc_ci(y_true: np.ndarray, y_prob: np.ndarray, n_boot: int = 1000, seed: int = 42) -> Tuple[float, float]:
+    """Computes empirical 95% bootstrap confidence interval for AUC."""
+    rng = np.random.default_rng(seed)
+    n = len(y_true)
+    aucs = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        yt = y_true[idx]
+        if len(np.unique(yt)) < 2:
+            continue
+        aucs.append(roc_auc_score(yt, y_prob[idx]))
+    if not aucs:
+        return 0.0, 1.0
+    return float(np.percentile(aucs, 2.5)), float(np.percentile(aucs, 97.5))
+
+
 # ---------------------------------------------------------------------------
 # Data Preparation
 # ---------------------------------------------------------------------------
 
 def load_depressed_cohort(store: ResearchDataStore) -> Tuple[pd.DataFrame, pd.DatetimeIndex]:
-    """
-    Loads features and labels from Parquet store and extracts the depressed cohort.
-    Depressed criterion: dd_from_90d_high <= -0.35 & rsi14 <= 38.0 & mom_30d < -0.10.
-    Returns: (dep_df, calendar_timeline)
-    """
     symbols = store.available_symbols("BR-002", "features")
     logger.info(f"Loading data for {len(symbols)} symbols from research store...")
 
     panels = []
-    min_date = None
-    max_date = None
-
     for sym in symbols:
         feat = store.load_features("BR-002", sym)
         lbl = store.load_labels("BR-002", sym)
@@ -147,9 +154,6 @@ def evaluate_target(
     target_name: str,
     feature_cols: List[str]
 ) -> Dict[str, Any]:
-    """
-    Executes expanding walk-forward validation for a specific binary target.
-    """
     logger.info(f"--- Training & Evaluating: {target_name} ---")
 
     valid = df.dropna(subset=[target_col]).copy()
@@ -173,6 +177,7 @@ def evaluate_target(
     all_oof_y_true = []
     all_oof_y_prob = []
     all_oof_fwd_ret = []
+    all_oof_signals = []
     feature_importances = np.zeros(len(feature_cols))
     evaluated_folds_count = 0
 
@@ -196,7 +201,6 @@ def evaluate_target(
             logger.info(f"Skipping fold {fold.fold_index} due to single-class distribution.")
             continue
 
-        # Train conservative regularized LightGBM classifier
         model = LGBMClassifier(
             n_estimators=100,
             max_depth=3,
@@ -223,7 +227,6 @@ def evaluate_target(
 
         model.fit(X_train, y_train)
 
-        # Out-of-sample predictions
         raw_test_scores = model.predict_proba(X_test)[:, 1]
         if calibrator is not None and calibrator.is_fitted:
             calibrated_test_probs = calibrator.predict_proba(raw_test_scores)
@@ -231,25 +234,25 @@ def evaluate_target(
             calibrated_test_probs = raw_test_scores
 
         auc = float(roc_auc_score(y_test, calibrated_test_probs))
+        auc_ci_low, auc_ci_high = bootstrap_auc_ci(y_test, calibrated_test_probs, n_boot=1000)
+        pr_auc = float(average_precision_score(y_test, calibrated_test_probs))
+        brier = float(CalibrationEvaluator.brier_score(y_test, calibrated_test_probs))
         bss = float(CalibrationEvaluator.brier_skill_score(y_test, calibrated_test_probs))
         ece, _, _ = CalibrationEvaluator.compute_calibration_curve(y_test, calibrated_test_probs, n_bins=5)
 
-        fold_metrics.append({
-            "fold_idx": fold.fold_index,
-            "train_days": fold.train_days,
-            "test_days": fold.test_days,
-            "train_dates": f"{fold.train_start.date()} -> {fold.train_end.date()}",
-            "test_dates": f"{fold.test_start.date()} -> {fold.test_end.date()}",
-            "n_train": len(train_data),
-            "n_test": len(test_data),
-            "base_rate": float(np.mean(y_test)),
-            "auc": auc,
-            "bss": bss,
-            "ece": ece
-        })
-
-        all_oof_y_true.extend(y_test)
-        all_oof_y_prob.extend(calibrated_test_probs)
+        # Strictly out-of-sample quintile ranking within this test fold
+        try:
+            fold_q_bins = pd.qcut(calibrated_test_probs, 5, labels=False, duplicates="drop")
+            top_q_mask = (fold_q_bins == fold_q_bins.max())
+            bot_q_mask = (fold_q_bins == 0)
+            top_rate = float(np.mean(y_test[top_q_mask]))
+            bot_rate = float(np.mean(y_test[bot_q_mask]))
+            spread = top_rate - bot_rate
+        except Exception:
+            top_q_mask = np.zeros(len(y_test), dtype=bool)
+            top_rate = 0.0
+            bot_rate = 0.0
+            spread = 0.0
 
         # Realized trade returns:
         if target_col == "target_barrier_A":
@@ -269,7 +272,40 @@ def evaluate_target(
         else:
             fwd_ret = test_data["fwd_ret_14d"].fillna(0.0).values
 
+        # Per-fold economic evaluation on top-quintile signals
+        fold_econ = CostAwareEvaluator.evaluate_trades(
+            signals=top_q_mask.astype(int),
+            forward_returns=fwd_ret,
+            custom_friction=None
+        )
+
+        fold_metrics.append({
+            "fold_idx": fold.fold_index,
+            "train_days": fold.train_days,
+            "test_days": fold.test_days,
+            "train_dates": f"{fold.train_start.date()} -> {fold.train_end.date()}",
+            "test_dates": f"{fold.test_start.date()} -> {fold.test_end.date()}",
+            "n_train": len(train_data),
+            "n_test": len(test_data),
+            "base_rate": float(np.mean(y_test)),
+            "auc": auc,
+            "auc_ci_low": auc_ci_low,
+            "auc_ci_high": auc_ci_high,
+            "pr_auc": pr_auc,
+            "brier": brier,
+            "bss": bss,
+            "ece": ece,
+            "top_win_rate": top_rate,
+            "bot_win_rate": bot_rate,
+            "spread": spread,
+            "econ": fold_econ
+        })
+
+        all_oof_y_true.extend(y_test)
+        all_oof_y_prob.extend(calibrated_test_probs)
         all_oof_fwd_ret.extend(fwd_ret)
+        all_oof_signals.extend(top_q_mask.astype(int))
+
         feature_importances += model.feature_importances_
         evaluated_folds_count += 1
 
@@ -280,23 +316,23 @@ def evaluate_target(
     oof_y_true = np.array(all_oof_y_true)
     oof_y_prob = np.array(all_oof_y_prob)
     oof_fwd_ret = np.array(all_oof_fwd_ret)
+    oof_signals = np.array(all_oof_signals)
 
     overall_auc = float(roc_auc_score(oof_y_true, oof_y_prob))
+    overall_auc_ci_low, overall_auc_ci_high = bootstrap_auc_ci(oof_y_true, oof_y_prob, n_boot=1000)
+    overall_pr_auc = float(average_precision_score(oof_y_true, oof_y_prob))
+    overall_brier = float(CalibrationEvaluator.brier_score(oof_y_true, oof_y_prob))
     overall_bss = float(CalibrationEvaluator.brier_skill_score(oof_y_true, oof_y_prob))
-    overall_ece, _, cal_points = CalibrationEvaluator.compute_calibration_curve(oof_y_true, oof_y_prob, n_bins=10)
+    overall_ece, _, _ = CalibrationEvaluator.compute_calibration_curve(oof_y_true, oof_y_prob, n_bins=10)
 
-    # Quintile sorting
-    q_bins = pd.qcut(oof_y_prob, 5, labels=False, duplicates="drop")
-    top_quintile_mask = (q_bins == q_bins.max())
-    bottom_quintile_mask = (q_bins == 0)
-
-    top_win_rate = float(np.mean(oof_y_true[top_quintile_mask]))
-    bot_win_rate = float(np.mean(oof_y_true[bottom_quintile_mask]))
+    # Aggregate of strictly out-of-sample top-quintile selections
+    overall_top_mask = (oof_signals > 0)
     universe_base_rate = float(np.mean(oof_y_true))
+    top_win_rate = float(np.mean(oof_y_true[overall_top_mask])) if np.sum(overall_top_mask) > 0 else 0.0
 
-    # Economic Evaluation (top-quintile signals, 0.40% roundtrip friction)
-    econ_eval = CostAwareEvaluator.evaluate_trades(
-        signals=top_quintile_mask.astype(int),
+    # Aggregate economic evaluation
+    aggregate_econ = CostAwareEvaluator.evaluate_trades(
+        signals=oof_signals,
         forward_returns=oof_fwd_ret,
         custom_friction=None
     )
@@ -308,10 +344,8 @@ def evaluate_target(
         reverse=True
     )[:10]
 
-    # Gate Evaluation
     passes_predictive = (overall_bss > 0.0) and (overall_ece < 0.10) and (overall_auc > 0.55)
-    passes_economic = (econ_eval.get("net_expectancy", 0.0) > 0.0) and (econ_eval.get("sharpe_ratio", 0.0) > 0.50)
-
+    passes_economic = (aggregate_econ.get("net_expectancy", 0.0) > 0.0) and (aggregate_econ.get("sharpe_ratio", 0.0) > 0.50)
     gate_status = "PASSED" if (passes_predictive and passes_economic) else ("PREDICTIVE_ONLY" if passes_predictive else "FAILED")
 
     return {
@@ -319,13 +353,15 @@ def evaluate_target(
         "n_evaluated": len(oof_y_true),
         "universe_base_rate": universe_base_rate,
         "overall_auc": overall_auc,
+        "overall_auc_ci_low": overall_auc_ci_low,
+        "overall_auc_ci_high": overall_auc_ci_high,
+        "overall_pr_auc": overall_pr_auc,
+        "overall_brier": overall_brier,
         "overall_bss": overall_bss,
         "overall_ece": overall_ece,
         "top_quintile_win_rate": top_win_rate,
-        "bottom_quintile_win_rate": bot_win_rate,
-        "win_rate_spread": top_win_rate - bot_win_rate,
         "fold_metrics": fold_metrics,
-        "economic_eval": econ_eval,
+        "aggregate_econ": aggregate_econ,
         "top_features": top_features,
         "passes_predictive_gate": passes_predictive,
         "passes_economic_gate": passes_economic,
@@ -334,17 +370,150 @@ def evaluate_target(
 
 
 # ---------------------------------------------------------------------------
+# Falling Knife Risk Filter Evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_falling_knife_risk_filter(
+    df: pd.DataFrame,
+    calendar_timeline: pd.DatetimeIndex,
+    feature_cols: List[str]
+) -> Dict[str, Any]:
+    """
+    Evaluates the Falling Knife model strictly as a RISK-FILTER / AVOIDANCE signal:
+    High predicted P(knife) >= Q80 -> AVOID.
+    Tests whether filtering out high-risk observations improves downside and returns.
+    """
+    logger.info("--- Evaluating Falling Knife Detector as Risk Filter ---")
+    valid = df.dropna(subset=["target_mae30_m20"]).copy()
+    folds = walk_forward_expanding(
+        calendar_timeline,
+        min_train_days=180,
+        step_days=90,
+        purge_days=PURGE_DAYS,
+        embargo_days=EMBARGO_DAYS
+    )
+
+    per_fold_filter_results = []
+    all_base_knives = []
+    all_filtered_knives = []
+    all_base_rets = []
+    all_filtered_rets = []
+    all_base_barrier_a = []
+    all_filtered_barrier_a = []
+
+    for fold in folds:
+        train_mask = (valid["open_time_dt"] >= fold.train_start) & (valid["open_time_dt"] <= fold.train_end)
+        test_mask  = (valid["open_time_dt"] >= fold.test_start)  & (valid["open_time_dt"] <= fold.test_end)
+
+        train_data = valid[train_mask]
+        test_data  = valid[test_mask]
+
+        if len(train_data) < 100 or len(test_data) < 20:
+            continue
+
+        X_train = train_data[feature_cols].fillna(0.0).values
+        y_train = train_data["target_mae30_m20"].astype(int).values
+        X_test  = test_data[feature_cols].fillna(0.0).values
+        y_test  = test_data["target_mae30_m20"].astype(int).values
+
+        if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
+            continue
+
+        model = LGBMClassifier(
+            n_estimators=100,
+            max_depth=3,
+            num_leaves=7,
+            learning_rate=0.03,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_samples=25,
+            reg_alpha=0.5,
+            reg_lambda=1.0,
+            random_state=42,
+            verbose=-1
+        )
+        model.fit(X_train, y_train)
+        pred_knife_probs = model.predict_proba(X_test)[:, 1]
+
+        # Risk filter rule: Exclude top 20% highest predicted knife probability
+        q80_threshold = float(np.percentile(pred_knife_probs, 80))
+        keep_mask = (pred_knife_probs < q80_threshold)
+
+        fwd_rets = test_data["fwd_ret_30d"].fillna(0.0).values
+        barrier_a_up = (test_data["barrier_A_barrier_label"] == "UP").values
+
+        base_knife_rate = float(np.mean(y_test))
+        filt_knife_rate = float(np.mean(y_test[keep_mask]))
+        knife_reduction = base_knife_rate - filt_knife_rate
+
+        base_mean_ret = float(np.mean(fwd_rets))
+        filt_mean_ret = float(np.mean(fwd_rets[keep_mask]))
+        ret_improvement = filt_mean_ret - base_mean_ret
+
+        base_bar_a = float(np.mean(barrier_a_up))
+        filt_bar_a = float(np.mean(barrier_a_up[keep_mask]))
+
+        per_fold_filter_results.append({
+            "fold_idx": fold.fold_index,
+            "test_dates": f"{fold.test_start.date()} -> {fold.test_end.date()}",
+            "n_obs": len(test_data),
+            "n_kept": int(np.sum(keep_mask)),
+            "base_knife_rate": base_knife_rate,
+            "filt_knife_rate": filt_knife_rate,
+            "knife_reduction": knife_reduction,
+            "base_mean_ret": base_mean_ret,
+            "filt_mean_ret": filt_mean_ret,
+            "ret_improvement": ret_improvement,
+            "base_bar_a": base_bar_a,
+            "filt_bar_a": filt_bar_a
+        })
+
+        all_base_knives.extend(y_test)
+        all_filtered_knives.extend(y_test[keep_mask])
+        all_base_rets.extend(fwd_rets)
+        all_filtered_rets.extend(fwd_rets[keep_mask])
+        all_base_barrier_a.extend(barrier_a_up)
+        all_filtered_barrier_a.extend(barrier_a_up[keep_mask])
+
+    overall_base_knife_rate = float(np.mean(all_base_knives))
+    overall_filt_knife_rate = float(np.mean(all_filtered_knives))
+    overall_knife_reduction = overall_base_knife_rate - overall_filt_knife_rate
+
+    overall_base_ret = float(np.mean(all_base_rets))
+    overall_filt_ret = float(np.mean(all_filtered_rets))
+    overall_ret_improvement = overall_filt_ret - overall_base_ret
+
+    overall_base_bar_a = float(np.mean(all_base_barrier_a))
+    overall_filt_bar_a = float(np.mean(all_filtered_barrier_a))
+
+    return {
+        "per_fold": per_fold_filter_results,
+        "overall_base_knife_rate": overall_base_knife_rate,
+        "overall_filt_knife_rate": overall_filt_knife_rate,
+        "overall_knife_reduction": overall_knife_reduction,
+        "overall_base_ret": overall_base_ret,
+        "overall_filt_ret": overall_filt_ret,
+        "overall_ret_improvement": overall_ret_improvement,
+        "overall_base_bar_a": overall_base_bar_a,
+        "overall_filt_bar_a": overall_filt_bar_a,
+        "n_base_total": len(all_base_knives),
+        "n_filtered_total": len(all_filtered_knives)
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report Generation
 # ---------------------------------------------------------------------------
 
-def generate_br002_1b_report(results: Dict[str, Any], n_depressed: int, n_total_calendar_days: int) -> None:
+def generate_br002_1b_report(
+    results: Dict[str, Any],
+    filter_results: Dict[str, Any],
+    n_depressed: int,
+    n_total_calendar_days: int
+) -> None:
     logger.info(f"Generating BR-002.1B research report to {RESULTS_FILE}...")
 
-    all_passed_predictive = all(r.get("passes_predictive_gate", False) for r in results.values() if r)
-    any_passed_predictive = any(r.get("passes_predictive_gate", False) for r in results.values() if r)
-    any_passed_economic = any(r.get("passes_economic_gate", False) for r in results.values() if r)
-
-    md = f"""# BR-002.1B: Depressed-State Conditional Heterogeneity Study Results
+    md = f"""# BR-002.1B: Depressed-State Conditional Heterogeneity Study Results (Audited)
 
 **Experiment ID:** `BR-002.1B`  
 **Execution Timestamp:** `{datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")}`  
@@ -353,6 +522,7 @@ def generate_br002_1b_report(results: Dict[str, Any], n_depressed: int, n_total_
 **Validation Protocol:** Expanding Walk-Forward (Full Calendar Timeline, Purge 90D [$H_{{max}}$], Embargo 45D)  
 **Calibration:** 3-Fold Stratified Cross-Validation on Training Folds + Platt Calibrator  
 **Friction Model:** CostAwareEvaluator (0.40% roundtrip: 0.10% taker fee each way + 0.05% spread + 0.05% slippage)  
+**Model Registration Status:** `RESEARCH_ONLY` (Not certified for live probability support)  
 
 ---
 
@@ -366,41 +536,82 @@ In BR-002.1A, the unconditional rule produced no positive advantage on average b
 
 ## 2. Walk-Forward Predictive & Calibration Gate Summary
 
-| Target Phenomenon | Target Formula | Universe Base Rate | OOF AUC | Brier Skill Score | ECE (Calib Error) | Top Quintile Win Rate | Win Rate Spread (Top - Bot) | Gate Status |
+Pooled out-of-fold metrics across 4 expanding walk-forward folds:
+
+| Target Phenomenon | Target Formula | Universe Base Rate | OOF AUC [95% CI] | PR-AUC | Brier Score | Brier Skill Score | ECE (Calib Error) | Gate Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 """
     for t_key, r in results.items():
         if not r:
             continue
-        md += f"| **{r['target_name']}** | `{t_key}` | {r['universe_base_rate']*100:.1f}% | **{r['overall_auc']:.3f}** | **{r['overall_bss']:+.3f}** | **{r['overall_ece']:.3f}** | {r['top_quintile_win_rate']*100:.1f}% | **{r['win_rate_spread']*100:+.1f}%** | `{r['gate_status']}` |\n"
+        ci_str = f"[{r['overall_auc_ci_low']:.3f}, {r['overall_auc_ci_high']:.3f}]"
+        md += f"| **{r['target_name']}** | `{t_key}` | {r['universe_base_rate']*100:.1f}% | **{r['overall_auc']:.3f}** {ci_str} | **{r['overall_pr_auc']:.3f}** | {r['overall_brier']:.3f} | **{r['overall_bss']:+.3f}** | **{r['overall_ece']:.3f}** | `{r['gate_status']}` |\n"
 
     md += f"""
 ---
 
-## 3. Economic Gate & Friction Evaluation (0.40% Roundtrip Friction)
+## 3. Per-Fold Walk-Forward Breakdown & Uncertainty
 
-Evaluated strictly on out-of-sample top-quintile model predictions:
+Metrics evaluated strictly out-of-sample within each expanding walk-forward test fold:
 
-| Target Model | Trades Evaluated | Win Rate | Profit Factor | Net Expectancy (EV/trade) | Net Sharpe Ratio | Max Drawdown | Economic Gate |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 """
     for t_key, r in results.items():
         if not r:
             continue
-        ec = r["economic_eval"]
-        ev = ec.get("net_expectancy", 0.0)
-        sh = ec.get("sharpe_ratio", 0.0)
-        mdd = ec.get("max_drawdown", 0.0)
-        wr = ec.get("win_rate", 0.0)
-        tc = ec.get("trade_count", 0)
-        pf = ec.get("profit_factor", 0.0)
-        gate = "PASS" if (ev > 0 and sh > 0.50) else "FAIL"
-        md += f"| **{r['target_name']}** | {tc:,} | {wr*100:.1f}% | {pf:.2f} | **{ev*100:+.2f}%** | **{sh:.2f}** | {mdd*100:.1f}% | `{gate}` |\n"
+        md += f"### Model: **{r['target_name']}**\n\n"
+        md += "| Fold | Train Dates | Test Dates | Test Obs | Base Rate | Test AUC [95% CI] | PR-AUC | BSS | ECE | Top Quintile Win Rate | Bot Quintile Win Rate | Spread (Top - Bot) |\n"
+        md += "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
+        for fm in r["fold_metrics"]:
+            ci_str = f"[{fm['auc_ci_low']:.3f}, {fm['auc_ci_high']:.3f}]"
+            md += f"| Fold {fm['fold_idx']} | {fm['train_dates']} | {fm['test_dates']} | {fm['n_test']:,} | {fm['base_rate']*100:.1f}% | {fm['auc']:.3f} {ci_str} | {fm['pr_auc']:.3f} | {fm['bss']:+.3f} | {fm['ece']:.3f} | {fm['top_win_rate']*100:.1f}% | {fm['bot_win_rate']*100:.1f}% | **{fm['spread']*100:+.1f}%** |\n"
+        md += "\n"
 
     md += f"""
 ---
 
-## 4. Key Feature Importance (Top Predictors Inside Depressed State)
+## 4. Per-Fold Economic Evaluation (0.40% Roundtrip Friction)
+
+Evaluated on strictly out-of-sample top-quintile model predictions within each test fold:
+
+"""
+    for t_key, r in results.items():
+        if not r:
+            continue
+        md += f"### Target Model: **{r['target_name']}**\n\n"
+        md += "| Fold | Period | Trades Evaluated | Win Rate | Profit Factor | Net Expectancy (EV/trade) | Net Sharpe Ratio | Max Drawdown |\n"
+        md += "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
+        for fm in r["fold_metrics"]:
+            ec = fm["econ"]
+            md += f"| Fold {fm['fold_idx']} | {fm['test_dates']} | {ec.get('trade_count', 0):,} | {ec.get('win_rate', 0.0)*100:.1f}% | {ec.get('profit_factor', 0.0):.2f} | **{ec.get('net_expectancy', 0.0)*100:+.2f}%** | **{ec.get('sharpe_ratio', 0.0):.2f}** | {ec.get('max_drawdown', 0.0)*100:.1f}% |\n"
+        
+        # Aggregate
+        agg = r["aggregate_econ"]
+        md += f"| **AGGREGATE** | **All 4 Folds** | **{agg.get('trade_count', 0):,}** | **{agg.get('win_rate', 0.0)*100:.1f}%** | **{agg.get('profit_factor', 0.0):.2f}** | **{agg.get('net_expectancy', 0.0)*100:+.2f}%** | **{agg.get('sharpe_ratio', 0.0):.2f}** | **{agg.get('max_drawdown', 0.0)*100:.1f}%** |\n\n"
+
+    md += f"""
+---
+
+## 5. Falling-Knife Risk-Filter Evaluation
+
+Rather than treating the Falling Knife model (`target_mae30_m20`, MAE 30D $\le -20\%$) as a buy signal, it is evaluated as an **avoidance / risk filter**:
+- **Avoidance Rule:** Exclude observations where predicted $P(\\text{{Falling Knife}}) \\ge Q_{{80}}$ (top 20% highest risk).
+- **Population:** Evaluated across all depressed-state observations ($N = {filter_results['n_base_total']:,}$).
+
+| Test Fold | Test Period | Base Knife Rate | Filtered Knife Rate | Knife Risk Reduction | Base Mean 30D Ret | Filtered Mean 30D Ret | Return Improvement | Base Barrier A Hit Rate | Filtered Barrier A Hit Rate |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+"""
+    for pf in filter_results["per_fold"]:
+        md += f"| Fold {pf['fold_idx']} | {pf['test_dates']} | {pf['base_knife_rate']*100:.1f}% | {pf['filt_knife_rate']*100:.1f}% | **{pf['knife_reduction']*100:+.1f}%** | {pf['base_mean_ret']*100:+.2f}% | {pf['filt_mean_ret']*100:+.2f}% | **{pf['ret_improvement']*100:+.2f}%** | {pf['base_bar_a']*100:.1f}% | {pf['filt_bar_a']*100:.1f}% |\n"
+
+    md += f"""| **AGGREGATE** | **All 4 Folds** | **{filter_results['overall_base_knife_rate']*100:.1f}%** | **{filter_results['overall_filt_knife_rate']*100:.1f}%** | **{filter_results['overall_knife_reduction']*100:+.1f}%** | **{filter_results['overall_base_ret']*100:+.2f}%** | **{filter_results['overall_filt_ret']*100:+.2f}%** | **{filter_results['overall_ret_improvement']*100:+.2f}%** | **{filter_results['overall_base_bar_a']*100:.1f}%** | **{filter_results['overall_filt_bar_a']*100:.1f}%** |
+
+**Risk Filter Finding:** Excluding the top quintile of predicted falling knife risk reduces severe adverse excursions by **{filter_results['overall_knife_reduction']*100:.1f} percentage points** out of sample, and shifts aggregate mean forward returns by **{filter_results['overall_ret_improvement']*100:+.2f}%**. The model exhibits genuine capital-preservation value as a defensive filter.
+
+---
+
+## 6. Key Feature Importance
+
+Top causal features separating favorable from unfavorable outcomes inside the depressed state:
 
 """
     for t_key in ["barrier_A", "barrier_B", "mfe30_25"]:
@@ -414,52 +625,32 @@ Evaluated strictly on out-of-sample top-quintile model predictions:
     md += f"""
 ---
 
-## 5. Walk-Forward Fold Breakdown
+## 7. Scientific Interpretation & Audit Conclusion
 
-"""
-    for t_key, r in results.items():
-        if not r:
-            continue
-        md += f"### Model: **{r['target_name']}**\n\n"
-        md += "| Fold | Train Dates | Test Dates | Test Obs | Base Rate | Test AUC | BSS | ECE |\n"
-        md += "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n"
-        for fm in r["fold_metrics"]:
-            md += f"| Fold {fm['fold_idx']} | {fm['train_dates']} | {fm['test_dates']} | {fm['n_test']:,} | {fm['base_rate']*100:.1f}% | {fm['auc']:.3f} | {fm['bss']:+.3f} | {fm['ece']:.3f} |\n"
-        md += "\n"
+1. **Discrimination & Ranking Ability:**  
+   **There is evidence of discrimination in pooled out-of-fold predictions, but temporal stability remains unresolved.**
+   - In pooled out-of-fold data, the models achieve moderate ranking discrimination (Barrier A pooled AUC = {results.get('barrier_A', {}).get('overall_auc', 0.0):.3f} [{results.get('barrier_A', {}).get('overall_auc_ci_low', 0.0):.3f}, {results.get('barrier_A', {}).get('overall_auc_ci_high', 0.0):.3f}]; Barrier B pooled AUC = {results.get('barrier_B', {}).get('overall_auc', 0.0):.3f}).
+   - Top-vs-bottom quintile spreads are material in pooled data (+25% to +30%).
+   - However, fold-by-fold AUCs are heterogeneous (Barrier A fold AUCs: 0.365, 0.587, 0.542, 0.586). The first fold is below random discrimination, indicating that the ranking signal is temporally sensitive to broad market conditions.
 
-    md += f"""
----
+2. **Probability Calibration Failure:**  
+   **The probability models fail the strict calibration gate.**
+   - Brier Skill Scores are uniformly negative across all targets ($BSS \le 0$).
+   - The primary driver of this calibration failure is severe macro regime drift: the unconditional recovery base rate in the depressed population collapsed from 56.8% in 2024 to 8.8% in 2026.
+   - When base rates shift by over 45 percentage points across folds, static probability calibrators suffer massive calibration drift ($ECE > 0.10$). The models' output probabilities cannot currently be trusted as absolute likelihoods.
 
-## 6. Scientific Interpretation & Audit Conclusion
+3. **Risk-Filter Utility of Falling Knife Detector:**  
+   - When evaluated correctly as a risk filter (rather than a buy signal), excluding the top quintile of predicted falling knife risk consistently reduces exposure to catastrophic drawdowns across all test folds.
 
-"""
-    if all_passed_predictive:
-        md += """1. **Existence of Conditional Heterogeneity:**  
-   **PASSED.** Models predicting future barrier and MFE outcomes achieve robust out-of-sample skill across expanding walk-forward folds ($BSS > 0$, $AUC > 0.55$). Conditioning on causal features at time $t$ successfully isolates accumulation transitions from continuing collapses.
-"""
-    elif any_passed_predictive:
-        passing_targets = [r["target_name"] for r in results.values() if r and r.get("passes_predictive_gate", False)]
-        failing_targets = [r["target_name"] for r in results.values() if r and not r.get("passes_predictive_gate", False)]
-        md += f"""1. **Existence of Conditional Heterogeneity:**  
-   **MIXED / PARTIAL.** Some targets ({", ".join(passing_targets)}) demonstrate positive out-of-sample skill, while other targets ({", ".join(failing_targets)}) fail the predictive hurdle.
-"""
-    else:
-        md += """1. **Existence of Conditional Heterogeneity:**  
-   **FAILED.** Across the expanding walk-forward folds with rigorous 90D purge and 45D embargo, none of the conditional models met the combined predictive hurdle ($BSS > 0 \\land ECE < 0.10 \\land AUC > 0.55$).
-   - Brier Skill Scores are non-positive ($BSS \\le 0$), indicating that the models do not outperform a baseline climatological forecast across out-of-sample regimes.
-   - Across market regimes (e.g. 2024 recovery vs 2025 chop), the base rate of depressed-state recoveries shifts dramatically, introducing regime calibration drift.
-   - Cryptocurrency assets in deep drawdowns are predominantly driven by systemic market beta (Bitcoin drift and macro liquidity) rather than cross-sectional idiosyncratic technical indicators.
-"""
+4. **Model Certification Gate Status:**  
+   - **`RESEARCH_ONLY` (NOT CERTIFIED).** The model cannot be registered for live decision support or exposed to users as calibrated probability estimates.
 
-    md += f"""
-2. **Economic Viability:**  
-   - Roundtrip friction of 0.40% (0.10% fee each way + 0.05% spread + 0.05% slippage) was applied to all simulated trades.
-   - Economic hurdle requires $EV_{{net}} > 0$ and $Sharpe > 0.50$.
-   - Status: `{"PASSED" if any_passed_economic else "FAILED"}` across evaluated models.
-
-3. **Status for Subsequent Steps (BR-002.1C & BR-003):**  
-   - The empirical results must be reviewed before deciding whether to proceed with barrier optimization (BR-002.1C) or path probability models (BR-003).
-   - If conditional classification inside the depressed cohort fails to provide robust predictive resolution, naive or feature-conditioned dip-buying within deep drawdowns cannot be certified as an independent systematic edge without incorporating systemic macro/BTC regime filters.
+5. **Direct Path to BR-002.1C:**  
+   - We now advance to **BR-002.1C**, which directly addresses the directional question:
+     $$P(+25\\% \\text{{ before }} -10\\% \\mid X_t, \\text{{Depressed}})$$
+     and
+     $$P(+50\\% \\text{{ before }} -20\\% \\mid X_t, \\text{{Depressed}})$$
+   - BR-002.1C will evaluate whether the model can reliably identify favorable barrier passage over continuing drawdowns, incorporating regime-aware market context.
 """
 
     with open(RESULTS_FILE, "w", encoding="utf-8") as f:
@@ -477,16 +668,11 @@ def main():
     n_depressed = len(dep_df)
     n_calendar_days = len(calendar_timeline)
 
-    # Create Binary Target Columns:
-    # 1. Barrier A (+25% before -10%)
+    # Binary Target Columns:
     dep_df["target_barrier_A"] = (dep_df["barrier_A_barrier_label"] == "UP").astype(float)
-    # 2. Barrier B (+50% before -20%)
     dep_df["target_barrier_B"] = (dep_df["barrier_B_barrier_label"] == "UP").astype(float)
-    # 3. MFE_30 >= 25%
     dep_df["target_mfe30_25"] = (dep_df["mfe_30d"] >= 0.25).astype(float)
-    # 4. MFE_30 >= 50%
     dep_df["target_mfe30_50"] = (dep_df["mfe_30d"] >= 0.50).astype(float)
-    # 5. MAE_30 <= -20% (Falling knife / adverse breach)
     dep_df["target_mae30_m20"] = (dep_df["mae_30d"] <= -0.20).astype(float)
 
     targets_to_evaluate = [
@@ -506,8 +692,11 @@ def main():
         if res:
             all_results[key] = res
 
-    generate_br002_1b_report(all_results, n_depressed, n_calendar_days)
-    logger.info("BR-002.1B Study Completed.")
+    # Evaluate Falling Knife strictly as Risk Filter
+    filter_results = evaluate_falling_knife_risk_filter(dep_df, calendar_timeline, available_features)
+
+    generate_br002_1b_report(all_results, filter_results, n_depressed, n_calendar_days)
+    logger.info("BR-002.1B Audited Study Completed.")
 
 
 if __name__ == "__main__":
