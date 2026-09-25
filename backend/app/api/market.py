@@ -11,9 +11,9 @@ async def get_market_regime():
     """Returns current market regime model with BTC/ETH trend and breadth."""
     return await regime_engine.detect_regime()
 
-@router.get("/ticker/{symbol}")
+@router.get("/ticker/{symbol:path}")
 async def get_ticker(symbol: str):
-    """Fetch 24hr ticker for symbol."""
+    """Fetch 24hr ticker for symbol. Accepts both BTCUSDT and BTC/USDT formats."""
     ticker = await market_data.get_ticker(symbol)
     if not ticker:
         raise HTTPException(status_code=404, detail=f"Ticker not found for {symbol}")
@@ -39,7 +39,7 @@ async def get_klines(
         })
     return candles
 
-@router.get("/depth/{symbol}")
+@router.get("/depth/{symbol:path}")
 async def get_depth(symbol: str):
-    """Fetches orderbook spread and liquidity depth."""
+    """Fetches orderbook spread and liquidity depth. Accepts both BTCUSDT and BTC/USDT formats."""
     return await market_data.get_orderbook_depth(symbol)

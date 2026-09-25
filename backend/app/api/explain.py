@@ -10,13 +10,14 @@ from ..models.schemas import AIExplanationResponse
 
 router = APIRouter(prefix="/explain", tags=["AI Quantitative Explainer"])
 
-@router.get("/{symbol}", response_model=AIExplanationResponse)
+@router.get("/{symbol:path}", response_model=AIExplanationResponse)
 async def explain_symbol(symbol: str):
     """
     Synthesizes mathematical indicator features and market structure into
     transparent, grounded explanations without hallucinations.
+    Accepts both BTCUSDT and BTC/USDT formats.
     """
-    sym = symbol.upper()
+    sym = symbol.upper().replace("/", "")
     ticker = await market_data.get_ticker(sym)
     if not ticker:
         ticker = market_data.ticker_map.get(sym)

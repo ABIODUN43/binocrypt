@@ -13,11 +13,21 @@ router = APIRouter(prefix="/setups", tags=["Setups"])
 @router.get("/active", response_model=List[TradeSetup])
 async def get_active_setups(limit: int = Query(5, ge=1, le=20)):
     """Returns top active setups across the liquid market."""
-    from .scanner import get_opportunities
-    opportunities = await get_opportunities(limit=15)
-    
+    # Read directly from the scanner cache instead of calling the route function
+    # (calling the FastAPI handler directly bypasses DI and leaves Query() objects
+    # unresolved, causing type errors on comparison with floats)
+    from .scanner import cached_opportunities, _perform_live_scan
+    import asyncio, time as _time
+
+    # Ensure cache is warm — trigger a background refresh if empty
+    if not cached_opportunities:
+        try:
+            await asyncio.wait_for(_perform_live_scan(), timeout=30.0)
+        except Exception as e:
+            print(f"[Setups] Initial scan warning: {e}")
+
     setups = []
-    for opp in opportunities:
+    for opp in cached_opportunities:
         if opp.total_score < 60.0:
             continue
         try:
@@ -34,11 +44,11 @@ async def get_active_setups(limit: int = Query(5, ge=1, le=20)):
     setups.sort(key=lambda s: (s.signal_state == "READY", s.score), reverse=True)
     return setups[:limit]
 
-@router.get("/{symbol}", response_model=TradeSetup)
+@router.get("/{symbol:path}", response_model=TradeSetup)
 async def get_symbol_setup(symbol: str):
-    """Calculates live trade setup for a specific crypto asset instantly."""
+    """Calculates live trade setup for a specific crypto asset instantly. Accepts BTC/USDT or BTCUSDT."""
     from .scanner import cached_opportunities
-    sym = symbol.upper()
+    sym = symbol.upper().replace("/", "")
     if not sym.endswith("USDT") and not sym.endswith("BTC"):
         sym = f"{sym}USDT"
 
