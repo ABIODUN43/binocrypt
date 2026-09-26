@@ -22,9 +22,9 @@
 1. **Implementation Correctness Verified (No Leakage Bug):**  
    Platt scaling and Isotonic calibration were verified to be strictly fit on out-of-fold cross-validation predictions within each training fold (`cross_val_predict(cv=3)`) and evaluated purely out-of-sample on future test data. The negative Brier Skill Scores are **not** an implementation error or coding bug.
 2. **Decomposition Demonstrates Discrimination vs. Calibration Separation:**  
-   Murphy Brier decomposition ($BS = \text{Uncertainty} - \text{Resolution} + \text{Reliability}$) proves that models have genuine discriminatory power ($\text{Resolution} > 0$, AUCs up to 0.685). However, **$\text{Reliability}$ penalties (calibration error) swamp $\text{Resolution}$ advantages**, driving $BSS < 0$.
-3. **Macro Base-Rate Drift is the Dominant Failure Mechanism:**  
-   Across expanding folds, empirical base rates fluctuate by up to **20 to 26 percentage points** between training and test periods. Fitting a static post-hoc calibrator (Platt or Isotonic) on the training distribution exacerbates test miscalibration during regime shifts.
+   Murphy Brier decomposition ($BS = \text{Uncertainty} - \text{Resolution} + \text{Reliability}$) shows non-trivial sample sorting/discrimination across probability bins ($\text{Resolution} > 0$, AUCs up to 0.685). However, **$\text{Reliability}$ penalties (calibration error) exceed $\text{Resolution}$ contributions**, driving $BSS < 0$.
+3. **Macro Base-Rate Drift is an Evidence-Supported Explanation:**  
+   Across expanding folds, empirical base rates fluctuate by up to **20 to 26 percentage points** between training and test periods. Fitting a static post-hoc calibrator (Platt or Isotonic) on the training distribution exacerbates test miscalibration during regime shifts. This macro base-rate drift provides an evidence-supported explanation for the observed reliability penalty, rather than a mathematical proof of sole causality.
 4. **Stop Gate Enforced:**  
    Because both models fail their required predictive gates for operational entry zones, **BR-003.3 (`EntryZoneEstimator`) is NOT implemented**, neither model is registered in the production registry, and downstream optimization is halted.
 
@@ -166,12 +166,12 @@ The audit verified the exact calibration protocol:
 
 ---
 
-## 6. Root-Cause Analysis: Murphy Brier Score Decomposition
+## 6. Analysis of Resolution, Reliability, and Drift (Murphy Decomposition)
 
-To definitively determine whether the failure is an implementation issue or non-stationary market drift, we compute the exact Murphy Brier Score decomposition:
+To evaluate whether poor calibration stems from an implementation flaw versus non-stationary sample dynamics, we compute the Murphy Brier Score decomposition:
 $$BS = \text{Uncertainty} - \text{Resolution} + \text{Reliability}$$
 - **Uncertainty ($c(1-c)$):** The inherent variance of the binary event (where $c = \text{base rate}$).
-- **Resolution ($\sum \frac{n_k}{N}(o_k - c)^2$):** Measures the model's ability to divide instances into subsets with different outcomes (**higher is better**).
+- **Resolution ($\sum \frac{n_k}{N}(o_k - c)^2$):** Measures the model's ability to sort instances into bins with differing empirical outcomes (**higher is better**).
 - **Reliability ($\sum \frac{n_k}{N}(p_k - o_k)^2$):** Measures the calibration error between predicted probabilities and observed frequencies (**lower is better; 0 is perfect**).
 
 ### Empirical Murphy Decomposition Results
@@ -179,15 +179,15 @@ $$BS = \text{Uncertainty} - \text{Resolution} + \text{Reliability}$$
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **BR-003.1 ($L=-8\%, h=1\text{D}$)** | 0.06004 | **0.00182** | **0.00238** | 0.0584 | **0.76** ($BSS > 0$) |
 | **BR-003.1 ($L=-8\%, h=3\text{D}$)** | 0.19045 | **0.00934** | **0.00320** | 0.1826 | **2.92** ($BSS > 0$) |
-| **BR-003.1 ($L=-8\%, h=14\text{D}$)** | 0.23673 | **0.00997** | 0.02871 | 0.2550 | 0.35 ($BSS < 0$) |
+| **BR-003.1 ARB Proxy ($h=14\text{D}$)** | 0.23673 | **0.00997** | 0.02871 | 0.2550 | 0.35 ($BSS < 0$) |
 | **BR-003.1 ($L=-8\%, h=30\text{D}$)** | 0.19317 | **0.00526** | 0.03999 | 0.2279 | 0.13 ($BSS < 0$) |
 | **BR-003.2 ARB Diagnostic (30D)** | 0.24852 | **0.00233** | 0.01790 | 0.2632 | 0.13 ($BSS < 0$) |
 
-### Mathematical Proof of Root Cause:
-1. In all cases, **$\text{Resolution} > 0$**. The features possess genuine predictive capacity to sort and differentiate outcomes.
-2. For $h=3\text{D}$, $\text{Resolution} (0.00934)$ is **nearly $3\times$ larger** than the calibration error $\text{Reliability} (0.00320)$, producing $BSS = +0.0413 > 0$.
-3. For $h=14\text{D}$ and $h=30\text{D}$, the calibration penalty $\text{Reliability} (0.02871 \text{ to } 0.03999)$ expands by nearly an order of magnitude due to macro regime drift, completely overwhelming the model's positive resolution.
-4. Therefore, the failure of BR-003.1 ($h \ge 14\text{D}$) and BR-003.2 is **not** an implementation error; it is an empirical property of long-horizon market non-stationarity.
+### Analysis of Findings:
+1. In all tested configurations, **$\text{Resolution} > 0$**. This confirms non-trivial sample sorting across bins (consistent with positive ROC-AUCs), rather than degenerate constant output. However, positive resolution must not be conflated with validated predictive skill on its own.
+2. For $h=3\text{D}$, $\text{Resolution} (0.00934)$ exceeds the calibration error $\text{Reliability} (0.00320)$, resulting in $BSS = +0.0413 > 0$.
+3. For multi-week horizons ($h=14\text{D}$ and $h=30\text{D}$), the calibration error $\text{Reliability} (0.02871 \text{ to } 0.03999)$ expands substantially, heavily exceeding $\text{Resolution} (0.00997)$ and resulting in $BSS < 0$.
+4. **Regime / Base-Rate Drift as an Evidence-Supported Explanation:** The observed $\pm 10\text{--}20\%$ swings in test cohort arrival rates across folds provide a strong, evidence-supported explanation for the high reliability penalty under expanding walk-forward splits, rather than a mathematical proof of sole causality.
 
 ---
 
@@ -198,31 +198,26 @@ $$BS = \text{Uncertainty} - \text{Resolution} + \text{Reliability}$$
 - [x] **Requirement 3:** 10-bin reliability/calibration distribution documented with sample counts and gaps.
 - [x] **Requirement 4:** Evaluated Platt scaling and Isotonic calibration; verified strict temporal isolation (no leakage) and identified that static calibration overfits training base rates during regime shifts.
 - [x] **Requirement 5:** Cross-horizon ($1\text{D}$ to $30\text{D}$) and cross-level ($-5\%$ to $-20\%$) calibration reported.
-- [x] **Requirement 6:** Proved via Murphy decomposition that calibration failure is caused by temporal/regime drift rather than implementation error.
+- [x] **Requirement 6:** Analyzed resolution, reliability, and drift without describing positive Murphy resolution as proof of genuine predictive power or claiming mathematical proof of sole causality.
 - [x] **Requirement 7:** No feature sets, thresholds, labels, horizons, or barrier pairs were retuned.
 - [x] **Requirement 8:** `EntryZoneEstimator` (BR-003.3) was **NOT created**.
 - [x] **Requirement 9:** Neither BR-003.1 nor BR-003.2 was registered in the model registry.
-- [x] **Language Correction:** Did not use the phrase *"optimal entry levels $L^*$ that maximize expected geometric return"* for BR-003.3.
+- [x] **Language Correction:** Avoided the phrase *"optimal entry levels $L^*$ that maximize expected geometric return"* for BR-003.3.
 
 ---
 
-## 8. Final Determinations
+## 8. Final Determinations & Conclusions
 
-### BR-003.1 (Level-Reach Probability): `NOT_VALIDATED`
-- **Determination:** **`NOT_VALIDATED`** for operational medium/long-horizon entry zones ($h \ge 14\text{D}$).  
-- **Caveat:** The model demonstrated valid predictive skill ($BSS > 0$, $ECE < 0.05$) for short horizons ($1\text{D}$ to $3\text{D}$), but the intended operational entry-zone horizon ($14\text{D}$, ARB proxy) failed the Brier Skill Score gate ($BSS = -0.0771$).
+In accordance with user review and audit verification, the following conclusions are formally recorded:
 
-### BR-003.2 (First-Passage Probability): `NOT_VALIDATED`
-- **Determination:** **`NOT_VALIDATED`**.  
-- **Reasoning:** Directional first-passage predictions yielded weak ranking discrimination ($AUC \approx 0.54\text{--}0.58$) and negative skill scores relative to climatology ($BSS \in [-0.039, -0.232]$). The model cannot be trusted as an operational probability engine.
-
----
-
-## Next Steps for User Review
-
-Because both BR-003.1 ($h \ge 14\text{D}$) and BR-003.2 failed their predictive gates ($BSS > 0$ and $ECE < 0.10$), **the stop gate holds**:
-- We will **not** force the implementation of BR-003.3.
-- We await your explicit instructions on whether to:
-  1. Conclude the BR-003 investigation with these negative/honest scientific results, documenting that static forward-path probabilities do not survive multi-week crypto regime drift.
-  2. Pivot to short-horizon execution models ($h \le 3\text{D}$), where BR-003.1 passed both gates ($BSS = +0.0413, ECE = 0.0408$).
-  3. Explore a separately defined research hypothesis (e.g. dynamic Bayesian regime switching).
+1. **BR-003.1 (Level-Reach Probability):**
+   - Has validated predictive performance **only** for the tested short horizons ($1\text{D}$ and $3\text{D}$ at the $-8\%$ configuration; $7\text{D}$ is mixed).
+   - Is **NOT validated** for the $14\text{D}/30\text{D}$ multi-week entry-zone use case.
+2. **BR-003.2 (First-Passage Probability):**
+   - Is **NOT validated** under the current predictive gate ($BSS \le 0$ across all barrier pairs).
+3. **Model Governance:**
+   - All BR-003 models remain strictly tagged as **`RESEARCH_ONLY`**.
+   - Neither model is registered in the production model registry.
+4. **Scope Control:**
+   - The existing long-horizon accumulation objective will **NOT** be pivoted into a 1D–3D “entry zone” without a new, explicitly defined research hypothesis.
+   - BR-003.3 (`EntryZoneEstimator`) remains on **HOLD**.
