@@ -35,10 +35,8 @@ $$\text{Predictive Gates: } BSS_{B1} > 0.00 \quad \land \quad BSS_{B3} > 0.00 \q
    Bayesian online updating on closed-horizon outcomes reduced the Brier score from 0.2559 (Static Platt) down to 0.2445 on the primary target, and from 0.2639 down to 0.2546 on the ARB first-passage target. It passed the calibration threshold ($ECE = 0.0925 < 0.10$) and beat the dynamic rolling baseline ($BSS_{B3} = +0.0287$). However, it still failed Gate 1 ($BSS_{B1} < 0$) against the expanding fold climatology and was not temporally stable across $\ge 3$ folds.
 2. **Architecture A Shows Stale Regime Memory:**  
    Partitioning calibration into discrete macro regimes ($BTC > EMA_{50}$ with positive vs. negative momentum) failed to improve upon the global calibrator ($BSS_{B1} = -0.0776$ vs. $-0.0771$). Fitting calibrators per regime on historical training folds assumes that a 2026 bull market behaves identically to a 2024 bull market; in reality, base rates within the same macro regime drifted by $>15$ percentage points across cycles.
-3. **Architecture C Proves Counterproductive:**  
-   Restricting training data to a rolling 365-day window worsened performance substantially ($BSS_{B1} = -0.1157$, $ECE = 0.1565$). Discarding data older than 1 year increased parameter variance without eliminating lag during regime transitions.
-4. **Conclusion:**  
-   Neither static nor dynamic candidate architectures jointly satisfy the four pre-registered predictive gates for multi-week horizons. The long-horizon accumulation/entry-zone objective cannot be supported by calibrated probability models under the tested paradigms.
+### Primary Conclusion:
+> **“Under the preregistered architectures, targets, universe, and expanding walk-forward protocol, no candidate satisfied all four predictive validation gates for multi-week probability forecasting. Architecture B improved over the dynamic rolling baseline B3 and achieved acceptable pooled ECE, but failed the B1 and temporal-consistency requirements.”**
 
 ---
 
@@ -187,15 +185,9 @@ Evaluating predictions across the three point-in-time macro regimes reveals wher
    Fails Gate 1 ($BSS_{B1} = -0.0776$), Gate 2 ($BSS_{B3} = -0.0170$), Gate 3 ($ECE = 0.1258$), and Gate 4 (0/4 folds). Discrete macro conditioning on historical folds does not resolve test distribution drift.
 2. **Architecture B (Bayesian Online Updating): `NOT_VALIDATED`**  
    Demonstrates meaningful progress by passing Gate 2 ($BSS_{B3} = +0.0287$) and Gate 3 ($ECE = 0.0925 < 0.10$), but ultimately fails Gate 1 ($BSS_{B1} = -0.0292 < 0$) and Gate 4 (only 1/4 folds passed jointly). While superior to static calibration, it is not sufficiently robust for production probability serving.
-3. **Architecture C (Rolling 365D Walk-Forward): `NOT_VALIDATED`**  
-   Fails all four gates ($BSS_{B1} = -0.1157$, $ECE = 0.1565$). Discarding older historical data degrades statistical efficiency without eliminating transition lag.
-
-### Overarching Scientific Conclusion:
-Across BR-002, BR-003, and BR-004, the evidence converges on a single, fundamental quantitative conclusion:
-
-> **In cryptocurrency markets, causal cross-sectional features provide stable ranking and discrimination power ($AUC \approx 0.61\text{--}0.69$, Top-vs-Bottom quintile spreads $> +25\%$), but multi-week absolute probability calibration ($h \ge 14\text{D}$) cannot beat static expanding climatology ($BSS_{B1} \le 0$) due to non-stationary macro cycle shifts.**
+### Primary Conclusion:
+> **“Under the preregistered architectures, targets, universe, and expanding walk-forward protocol, no candidate satisfied all four predictive validation gates for multi-week probability forecasting. Architecture B improved over the dynamic rolling baseline B3 and achieved acceptable pooled ECE, but failed the B1 and temporal-consistency requirements.”**
 
 ### Strategic Recommendation for Binocrypt:
-Do **not** force downstream components to consume uncalibrated multi-week probabilities. Instead of treating entry-zone selection as an absolute probability maximization problem ($P(\text{reach}) \times \text{Payoff}$), Binocrypt should transition to:
-1. **Ranking-Based / Quantile Relative-Value Selection:** Use the validated ranking signal ($AUC \approx 0.65$, quintile spreads) to rank assets into relative opportunity tiers rather than emitting raw probabilities.
-2. **Short-Horizon Execution Models ($h \le 3\text{D}$):** Where BR-003.1 proved that probability calibration genuinely holds ($BSS = +0.0413, ECE = 0.0408$).
+Do **not** force downstream components to consume uncalibrated multi-week probabilities. Instead of spending further cycles attempting to force an absolute probability model to do something the empirical data does not support under these walk-forward tests, the next research experiment should evaluate whether the observed ranking capacity (AUC $\approx 0.61\text{--}0.69$, quintile spreads $>+25\%$) translates into economically meaningful cross-sectional selection:
+- **BR-005 (Cross-Sectional Opportunity Ranking):** Test whether causal features can rank assets within the daily Binance Spot cross-section such that higher-ranked assets exhibit superior out-of-sample risk-adjusted forward outcomes across 7D/14D/30D horizons, evaluated under strict predictive gates prior to friction-adjusted portfolio simulation.
