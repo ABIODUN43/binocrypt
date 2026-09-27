@@ -39,7 +39,8 @@ All parameters, feature definitions, universe constituents, and operational rule
 1. **Ranking Engine (Model 3 LambdaRank):**  
    - Objective: `lambdarank`
    - Canonical Hyperparameters: `n_estimators=100, max_depth=3, num_leaves=7, learning_rate=0.03, subsample=0.8, colsample_bytree=0.8, min_child_samples=30, reg_alpha=0.5, reg_lambda=1.0, random_state=42`
-   - Model weights trained on historical data up to 2026-09-25 23:59:59 UTC, serialized to disk, and cryptographically hashed (`br006_frozen_lambdarank.joblib`).
+   - **Target Label Closure Discipline:** Model training is strictly restricted to historical observations whose 14-day target labels were fully closed by the 2026-09-25 freeze date ($t_i + 14\text{D} \le \text{2026-09-25}$). Features may exist through the freeze date for scoring purposes, but zero unresolved future labels enter model training.
+   - Model weights are serialized to disk and cryptographically hashed (`frozen_model.joblib`, SHA-256: `d8c2dd42f8dde7060e3e9abbdf52c646702b335c07e464e0b3e551adc02950b2`).
    - **Zero retraining, recalibration, threshold changes, feature changes, or overlay changes using BR-006 observations.**
 2. **Feature Set (45 Causal Features):**  
    Strictly identical `FEATURE_COLS` computed point-in-time from daily OHLCV bars.

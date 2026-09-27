@@ -74,5 +74,6 @@
     "cash_oneway": 0.002,
     "cash_yield": 0.0
   },
-  "overlay_rule": "w_macro = 1.0 if Close_BTC >= EMA50_BTC else 0.0"
+  "overlay_rule": "w_macro = 1.0 if Close_BTC >= EMA50_BTC else 0.0",
+  "target_label_closure_discipline": "Model training is strictly restricted to historical observations whose 14-day target labels were fully closed by the 2026-09-25 freeze date (t_i + 14D <= 2026-09-25). Features may exist through the freeze date, but zero unresolved future labels entered training."
 }
