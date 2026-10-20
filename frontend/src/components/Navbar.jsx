@@ -13,7 +13,8 @@ import {
   Sparkles,
   Compass,
   Award,
-  Skull
+  Skull,
+  Target
 } from 'lucide-react';
 
 export default function Navbar({ 
@@ -55,6 +56,7 @@ export default function Navbar({
 
   const navItems = [
     { id: 'dashboard', label: 'Terminal', icon: Terminal },
+    { id: 'bottom', label: 'Bottom Intelligence (BR-007)', icon: Target },
     { id: 'intelligence', label: 'Market Intelligence', icon: Sparkles },
     { id: 'recovery', label: 'Recovery Scanner', icon: Compass },
     { id: 'quantlab', label: 'Quant Lab', icon: Sliders },

@@ -90,6 +90,10 @@ export const api = {
   getLargeMoveSurface: (symbol) => apiRequest(`/research/large-move/${encodeURIComponent(symbol)}`),
   getEntryStrategies: (symbol) => apiRequest(`/research/entry-strategies/${encodeURIComponent(symbol)}`),
   getFalseRecoveryRisk: (symbol) => apiRequest(`/research/false-recovery/${encodeURIComponent(symbol)}`),
-  getUniverseRanking: (limit = 10) => apiRequest(`/research/ranking?limit=${limit}`)
+  getUniverseRanking: (limit = 10) => apiRequest(`/research/ranking?limit=${limit}`),
+
+  // BR-007 Swing Reversal & Bottom-Formation Intelligence
+  getReversalIntelligence: (symbol) => apiRequest(`/reversal/${encodeURIComponent(symbol)}`),
+  getReversalScanner: () => apiRequest('/reversal/scanner')
 };
 

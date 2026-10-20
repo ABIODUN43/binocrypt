@@ -11,6 +11,7 @@ import ExperimentMilestone from './components/ExperimentMilestone';
 import RiskCalculatorModal from './components/RiskCalculatorModal';
 import AIExplanationModal from './components/AIExplanationModal';
 import AssetIntelligenceView from './components/AssetIntelligenceView';
+import BottomIntelligenceView from './components/BottomIntelligenceView';
 import RecoveryScannerView from './components/RecoveryScannerView';
 import PredictionHistoryView from './components/PredictionHistoryView';
 import QuantResearchLabView from './components/QuantResearchLabView';
@@ -321,6 +322,15 @@ export default function App() {
               selectedSymbol={selectedSymbol}
             />
           </div>
+        )}
+
+        {/* BR-007: Bottom-Formation & Swing Reversal Intelligence Tab */}
+        {activeTab === 'bottom' && (
+          <BottomIntelligenceView
+            selectedSymbol={selectedSymbol}
+            onSelectCoin={handleSelectCoin}
+            onExecuteTrade={handleQuickPaperTrade}
+          />
         )}
 
         {/* 2. Market Intelligence & Decision Engine Tab */}
