@@ -57,8 +57,9 @@ export default function Navbar({
   const navItems = [
     { id: 'dashboard', label: 'Terminal', icon: Terminal },
     { id: 'bottom', label: 'Bottom Intelligence (BR-007)', icon: Target },
-    { id: 'intelligence', label: 'Market Intelligence', icon: Sparkles },
-    { id: 'recovery', label: 'Recovery Scanner', icon: Compass },
+    { id: 'recovery_br009', label: 'Recovery Intelligence (BR-009)', icon: Sparkles },
+    { id: 'intelligence', label: 'Market Intelligence', icon: Activity },
+    { id: 'recovery', label: 'Legacy Recovery', icon: Compass },
     { id: 'quantlab', label: 'Quant Lab', icon: Sliders },
     { id: 'graveyard', label: 'Graveyard', icon: Skull },
     { id: 'history', label: 'Track Record', icon: Award },

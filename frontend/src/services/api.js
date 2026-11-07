@@ -101,6 +101,16 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(data)
   }),
-  getReversalSignalHistory: (symbol) => apiRequest(`/reversal/signals/${encodeURIComponent(symbol)}`)
+  getReversalSignalHistory: (symbol) => apiRequest(`/reversal/signals/${encodeURIComponent(symbol)}`),
+
+  // BR-009 Probabilistic Recovery & Optimal Entry Intelligence
+  getRecoveryIntelligence: (symbol) => apiRequest(`/recovery/${encodeURIComponent(symbol)}`),
+  getRecoveryScanner: () => apiRequest('/recovery/scanner'),
+  getStrategyBenchmarks: (symbol) => apiRequest(`/recovery/strategies/${encodeURIComponent(symbol)}`),
+  getRecoveryCalibration: () => apiRequest('/recovery/calibration'),
+  executeRecoveryTrade: (data) => apiRequest('/recovery/execute', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  })
 };
 

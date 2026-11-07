@@ -161,6 +161,43 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_sig_sym_state ON signal_lifecycle_records(symbol, lifecycle_state)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_sig_created ON signal_lifecycle_records(created_at)")
 
+        # BR-009: Probabilistic Recovery & Optimal Entry Intelligence Records
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS recovery_forecast_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                forecast_id TEXT UNIQUE NOT NULL,
+                symbol TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                forecast_horizon_days INTEGER DEFAULT 14,
+                decision TEXT NOT NULL,
+                market_state TEXT NOT NULL,
+                current_price REAL NOT NULL,
+                preferred_entry REAL NOT NULL,
+                entry_lower REAL NOT NULL,
+                entry_upper REAL NOT NULL,
+                invalidation_price REAL NOT NULL,
+                tp1_target REAL NOT NULL,
+                tp1_prob REAL NOT NULL,
+                tp2_target REAL NOT NULL,
+                tp2_prob REAL NOT NULL,
+                tp3_target REAL NOT NULL,
+                tp3_prob REAL NOT NULL,
+                tp4_target REAL NOT NULL,
+                tp4_prob REAL NOT NULL,
+                invalidation_prob REAL NOT NULL,
+                timeout_prob REAL NOT NULL,
+                expected_net_return REAL,
+                optimal_strategy TEXT,
+                calibration_brier_score REAL,
+                model_version TEXT DEFAULT 'BR009-v1.0',
+                resolved INTEGER DEFAULT 0,
+                resolved_at TIMESTAMP,
+                resolved_outcome TEXT
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_rec_sym ON recovery_forecast_records(symbol)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_rec_created ON recovery_forecast_records(created_at)")
+
         # Safe migration for signal_id in paper_positions
         try:
             await db.execute("ALTER TABLE paper_positions ADD COLUMN signal_id TEXT")

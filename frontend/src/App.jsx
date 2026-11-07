@@ -12,6 +12,7 @@ import RiskCalculatorModal from './components/RiskCalculatorModal';
 import AIExplanationModal from './components/AIExplanationModal';
 import AssetIntelligenceView from './components/AssetIntelligenceView';
 import BottomIntelligenceView from './components/BottomIntelligenceView';
+import RecoveryIntelligenceView from './components/RecoveryIntelligenceView';
 import RecoveryScannerView from './components/RecoveryScannerView';
 import PredictionHistoryView from './components/PredictionHistoryView';
 import QuantResearchLabView from './components/QuantResearchLabView';
@@ -332,6 +333,20 @@ export default function App() {
             onExecuteTrade={(sym, res) => {
               if (res?.fill_price) {
                 showToast(`Reversal paper order filled: ${sym} @ $${res.fill_price} ($${res.notional_usd?.toFixed(2)} USDT)`);
+              }
+              loadAllData(false);
+            }}
+          />
+        )}
+
+        {/* BR-009: Probabilistic Recovery & Optimal Entry Intelligence Tab */}
+        {activeTab === 'recovery_br009' && (
+          <RecoveryIntelligenceView
+            selectedSymbol={selectedSymbol}
+            onSelectCoin={handleSelectCoin}
+            onExecuteTrade={(sym, res) => {
+              if (res?.entry_price) {
+                showToast(`Recovery paper order filled: ${sym} @ $${res.entry_price} ($${res.notional_usd?.toFixed(2)} USDT)`);
               }
               loadAllData(false);
             }}

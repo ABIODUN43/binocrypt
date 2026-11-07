@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from .core.config import settings
 from .core.database import init_db
-from .api import market, scanner, setups, risk, paper, backtest, explain, intelligence, research, reversal
+from .api import market, scanner, setups, risk, paper, backtest, explain, intelligence, research, reversal, recovery
 from .services.paper_trader import paper_trader
 
 background_trigger_task = None
@@ -75,6 +75,7 @@ app.include_router(explain.router, prefix=settings.API_V1_STR)
 app.include_router(intelligence.router, prefix=settings.API_V1_STR)
 app.include_router(research.router, prefix=settings.API_V1_STR)
 app.include_router(reversal.router, prefix=settings.API_V1_STR)
+app.include_router(recovery.router, prefix=settings.API_V1_STR)
 
 @app.get("/api/health")
 @app.get("/healthz")
