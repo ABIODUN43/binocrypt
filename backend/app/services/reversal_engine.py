@@ -7,6 +7,7 @@ import numpy as np
 
 from .market_data import market_data
 from .features import FeatureEngine
+from .signal_guard import signal_guard
 
 class ReversalIntelligenceEngine:
     """
@@ -65,8 +66,30 @@ class ReversalIntelligenceEngine:
         # 4. Calculate Triple-Barrier Recovery Targets
         triple_barriers = self._calculate_triple_barrier_targets(current_price, features, state_info)
         
-        # 5. Generate Risk-Controlled Execution Setup
+        # 5. Generate Initial Execution Setup
         execution_setup = self._generate_execution_setup(current_price, features, state_info, bottom_zone)
+
+        # 6. BR-008 Signal Lifecycle, Entry Timing Intelligence & Execution Guard
+        feed_meta = await market_data.get_klines_metadata(sym, interval="1h", limit=100)
+        lifecycle = await signal_guard.evaluate_signal_lifecycle(
+            symbol=sym,
+            analytical_state=state_info["state"],
+            bottom_zone=bottom_zone,
+            raw_execution_setup=execution_setup,
+            triple_barriers=triple_barriers,
+            feed_meta=feed_meta,
+            current_price=current_price
+        )
+
+        # Reconcile execution_setup with BR-008 lifecycle safety verdicts
+        execution_setup["can_execute"] = lifecycle["can_execute"]
+        execution_setup["status"] = lifecycle["lifecycle_state"]
+        execution_setup["action_recommendation"] = lifecycle["action_recommendation"]
+        execution_setup["eligibility_reason"] = lifecycle["eligibility_reason"]
+        execution_setup["signal_id"] = lifecycle["signal_id"]
+        execution_setup["live_rr"] = lifecycle["live_rr"]
+        execution_setup["lifecycle_label"] = lifecycle["lifecycle_label"]
+        execution_setup["lifecycle_color"] = lifecycle["lifecycle_color"]
 
         payload = {
             "symbol": sym,
@@ -84,6 +107,13 @@ class ReversalIntelligenceEngine:
             "bottom_zone": bottom_zone,
             "triple_barriers": triple_barriers,
             "execution_setup": execution_setup,
+            "lifecycle_guard": lifecycle,
+            "data_provenance": {
+                "source": feed_meta.get("source", "BINANCE"),
+                "feed_status": feed_meta.get("feed_status", "LIVE_HEALTHY"),
+                "age_seconds": feed_meta.get("age_seconds", 0.0),
+                "latest_candle_time": feed_meta.get("latest_candle_time", 0)
+            },
             "radar_signals": {
                 "momentum_deceleration": features["accel_deceleration_score"],
                 "buyer_absorption": features["buyer_absorption_score"],
@@ -150,7 +180,12 @@ class ReversalIntelligenceEngine:
                     "dist_to_floor_pct": res["bottom_zone"]["dist_to_floor_pct"],
                     "invalidation_price": res["bottom_zone"]["invalidation_price"],
                     "risk_reward": res["triple_barriers"]["config_a"]["risk_reward_ratio"],
-                    "recommended_action": res["execution_setup"]["action_recommendation"]
+                    "recommended_action": res["execution_setup"]["action_recommendation"],
+                    "lifecycle_state": res.get("lifecycle_guard", {}).get("lifecycle_state", res["state"]),
+                    "lifecycle_label": res.get("lifecycle_guard", {}).get("lifecycle_label", res["state_label"]),
+                    "is_actionable": res.get("lifecycle_guard", {}).get("is_actionable", False),
+                    "signal_id": res.get("lifecycle_guard", {}).get("signal_id"),
+                    "eligibility_reason": res.get("lifecycle_guard", {}).get("eligibility_reason")
                 })
 
         # Sort: first REVERSAL_CONFIRMED, then BASE_FORMING, then DOWNSIDE_EXHAUSTION_WATCH, then highest exhaustion score

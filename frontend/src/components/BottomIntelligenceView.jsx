@@ -14,7 +14,10 @@ import {
   Sparkles, 
   Compass,
   Zap,
-  Info
+  Info,
+  ShieldCheck,
+  Lock,
+  Radio
 } from 'lucide-react';
 
 export default function BottomIntelligenceView({ 
@@ -29,6 +32,8 @@ export default function BottomIntelligenceView({
   const [isScannerLoading, setIsScannerLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [activeTab, setActiveTab] = useState('inspector'); // 'inspector' or 'scanner'
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionMessage, setExecutionMessage] = useState(null);
 
   // Update symbol when parent changes
   useEffect(() => {
@@ -117,6 +122,104 @@ export default function BottomIntelligenceView({
             {label || 'Declining Trend'}
           </span>
         );
+    }
+  };
+
+  // BR-008 Lifecycle Guard Badge Helper
+  const getLifecycleBadge = (guard) => {
+    if (!guard) return null;
+    const st = guard.lifecycle_state;
+    switch (st) {
+      case 'READY_TO_EXECUTE':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950 text-emerald-300 border border-emerald-700 font-mono font-bold text-[11px]">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            READY TO EXECUTE
+          </span>
+        );
+      case 'TARGET_REACHED_BEFORE_ENTRY':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-950 text-rose-300 border border-rose-700 font-mono font-bold text-[11px]">
+            <AlertTriangle className="w-3 h-3 text-rose-400" />
+            TARGET REACHED (CLOSED)
+          </span>
+        );
+      case 'MISSED_ENTRY':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-950 text-amber-300 border border-amber-700 font-mono font-bold text-[11px]">
+            <AlertTriangle className="w-3 h-3 text-amber-400" />
+            MISSED ENTRY (RUNAWAY)
+          </span>
+        );
+      case 'POSITION_OPEN':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-cyan-950 text-cyan-300 border border-cyan-700 font-mono font-bold text-[11px]">
+            <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+            POSITION OPEN
+          </span>
+        );
+      case 'INVALIDATED':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-950 text-rose-400 border border-rose-800 font-mono font-bold text-[11px]">
+            <ShieldAlert className="w-3 h-3" />
+            INVALIDATED
+          </span>
+        );
+      case 'EXPIRED':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 text-slate-400 border border-slate-700 font-mono font-bold text-[11px]">
+            <Clock className="w-3 h-3" />
+            EXPIRED (&gt;2H)
+          </span>
+        );
+      case 'STALE_MARKET_DATA':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-950 text-amber-300 border border-amber-800 font-mono font-bold text-[11px]">
+            <AlertTriangle className="w-3 h-3 text-amber-400" />
+            STALE FEED
+          </span>
+        );
+      default:
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 text-slate-300 border border-slate-700 font-mono font-bold text-[11px]">
+            {guard.lifecycle_label || st || 'MONITORING'}
+          </span>
+        );
+    }
+  };
+
+  const handleExecuteReversalTrade = async () => {
+    if (!data || !data.execution_setup || !data.execution_setup.can_execute) return;
+    setIsExecuting(true);
+    setExecutionMessage(null);
+    try {
+      const res = await api.executeReversalSignal({
+        symbol: data.symbol,
+        signal_id: data.execution_setup.signal_id
+      });
+      if (res && res.success) {
+        setExecutionMessage({
+          type: 'success',
+          text: `Atomic Reversal Trade Filled: ${res.symbol} @ $${res.fill_price} ($${res.notional_usd?.toFixed(2)} USDT)`
+        });
+        await loadData(symbol);
+        await loadScanner();
+        if (onExecuteTrade) {
+          onExecuteTrade(symbol, res);
+        }
+      } else {
+        setExecutionMessage({
+          type: 'error',
+          text: res?.error || 'Execution rejected by safety guard.'
+        });
+      }
+    } catch (err) {
+      setExecutionMessage({
+        type: 'error',
+        text: err.message || 'Execution error encountered.'
+      });
+    } finally {
+      setIsExecuting(false);
     }
   };
 
@@ -406,24 +509,95 @@ export default function BottomIntelligenceView({
               {/* Action Recommendation Card */}
               <div className="terminal-card p-5 border-emerald-800/40 bg-[#0f172a]/90 space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono uppercase text-gray-400 font-bold">Execution Directive</span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                    data.execution_setup.status === 'READY_TO_EXECUTE' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' :
-                    data.execution_setup.status === 'PREPARE_LIMIT_WATCH' ? 'bg-cyan-950 text-cyan-300 border border-cyan-700' :
-                    'bg-slate-900 text-slate-300 border border-slate-700'
-                  }`}>
-                    {data.execution_setup.status}
-                  </span>
+                  <div>
+                    <span className="text-xs font-mono uppercase text-gray-400 font-bold block">Execution Directive & Signal Guard</span>
+                    <span className="text-[10px] font-mono text-gray-500">BR-008 Causal Lifecycle Control</span>
+                  </div>
+                  <div>
+                    {getLifecycleBadge(data.lifecycle_guard)}
+                  </div>
                 </div>
+
+                {/* Feed Provenance Strip */}
+                {data.data_provenance && (
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded bg-[#0b0e14] border border-gray-800 text-[10px] font-mono text-gray-400">
+                    <span className="flex items-center gap-1.5">
+                      <Radio className={`w-3 h-3 ${data.data_provenance.feed_status === 'LIVE_HEALTHY' ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
+                      Feed: <strong className="text-gray-200">{data.data_provenance.source} Spot</strong>
+                    </span>
+                    <span>
+                      Latency: <strong className="text-gray-200">{typeof data.data_provenance.age_seconds === 'number' ? `${data.data_provenance.age_seconds.toFixed(1)}s` : '0s'}</strong>
+                    </span>
+                  </div>
+                )}
+
+                {/* Critical Lifecycle Alert Callouts */}
+                {data.lifecycle_guard?.lifecycle_state === 'TARGET_REACHED_BEFORE_ENTRY' && (
+                  <div className="p-3.5 rounded-lg bg-rose-950/60 border border-rose-600/70 text-xs font-mono space-y-1.5 text-rose-200">
+                    <div className="flex items-center gap-2 font-bold text-rose-300">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>TARGET REACHED BEFORE ENTRY — ORDER BLOCKED</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-rose-200/90 font-sans">
+                      Live market price (<strong>${data.current_price?.toFixed(4)}</strong>) has reached or exceeded TP1 target (<strong>${data.execution_setup?.tp1_price?.toFixed(4)}</strong>). The original swing opportunity is closed. Under causal risk governance, chasing past target is strictly forbidden.
+                    </p>
+                  </div>
+                )}
+
+                {data.lifecycle_guard?.lifecycle_state === 'MISSED_ENTRY' && (
+                  <div className="p-3.5 rounded-lg bg-amber-950/60 border border-amber-600/70 text-xs font-mono space-y-1.5 text-amber-200">
+                    <div className="flex items-center gap-2 font-bold text-amber-300">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>MISSED ENTRY — RUNAWAY PRICE ABOVE ZONE</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-200/90 font-sans">
+                      Current price (<strong>${data.current_price?.toFixed(4)}</strong>) has moved beyond the safe entry boundary (<strong>${data.execution_setup?.entry_zone_max?.toFixed(4)}</strong>). Entering now degrades the risk-to-reward ratio ({data.execution_setup?.live_rr ? `live 1:${data.execution_setup.live_rr}` : 'impaired'}). Wait for a pullback into the confirmed zone.
+                    </p>
+                  </div>
+                )}
+
+                {data.lifecycle_guard?.lifecycle_state === 'POSITION_OPEN' && (
+                  <div className="p-3.5 rounded-lg bg-cyan-950/60 border border-cyan-600/70 text-xs font-mono space-y-1.5 text-cyan-200">
+                    <div className="flex items-center gap-2 font-bold text-cyan-300">
+                      <CheckCircle2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>POSITION ACTIVE IN PAPER TRADER</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-cyan-200/90 font-sans">
+                      A position for this signal is currently active in your Paper Trading portfolio (Signal: <span className="font-mono">{data.execution_setup?.signal_id}</span>). Duplicate entry is locked by the database.
+                    </p>
+                  </div>
+                )}
+
+                {data.lifecycle_guard?.lifecycle_state === 'STALE_MARKET_DATA' && (
+                  <div className="p-3.5 rounded-lg bg-amber-950/60 border border-amber-600/70 text-xs font-mono space-y-1.5 text-amber-200">
+                    <div className="flex items-center gap-2 font-bold text-amber-300">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>MARKET DATA FEED STALE</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-200/90 font-sans">
+                      Market data feed age exceeds the safety threshold ({data.data_provenance?.age_seconds?.toFixed(0)}s &gt; 180s). Trading is locked to protect against stale execution.
+                    </p>
+                  </div>
+                )}
 
                 <div className="p-3 rounded-lg bg-[#0b0e14] border border-gray-800 text-xs font-mono space-y-2">
                   <div className="text-gray-300 leading-relaxed font-sans">
                     {data.execution_setup.action_recommendation}
                   </div>
+                  {data.execution_setup.signal_id && (
+                    <div className="text-[10px] text-gray-500 font-mono flex items-center justify-between border-t border-gray-800/60 pt-1.5">
+                      <span>Signal ID:</span>
+                      <span className="text-gray-400">{data.execution_setup.signal_id}</span>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-800/80 text-[11px]">
                     <div>
                       <span className="text-gray-500">Entry Zone:</span>
                       <div className="text-white font-bold">${data.execution_setup.entry_zone_min.toFixed(4)} - ${data.execution_setup.entry_zone_max.toFixed(4)}</div>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Live Spot Price:</span>
+                      <div className="text-emerald-400 font-bold">${data.current_price.toFixed(4)}</div>
                     </div>
                     <div>
                       <span className="text-gray-500">Stop Distance:</span>
@@ -434,32 +608,84 @@ export default function BottomIntelligenceView({
                       <div className="text-emerald-400 font-bold">${data.execution_setup.tp1_price.toFixed(4)}</div>
                     </div>
                     <div>
-                      <span className="text-gray-500">Risk/Reward:</span>
+                      <span className="text-gray-500">Original R/R:</span>
                       <div className="text-cyan-400 font-bold">1 : {data.execution_setup.risk_reward_ratio}</div>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Live R/R:</span>
+                      <div className={`font-bold ${data.execution_setup.live_rr && data.execution_setup.live_rr < 1.3 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                        1 : {data.execution_setup.live_rr || data.execution_setup.risk_reward_ratio}
+                      </div>
                     </div>
                   </div>
                 </div>
 
+                {/* Execution Feedback Banner */}
+                {executionMessage && (
+                  <div className={`p-3 rounded-lg text-xs font-mono flex items-center gap-2 ${
+                    executionMessage.type === 'success' 
+                      ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700' 
+                      : 'bg-rose-950/80 text-rose-300 border border-rose-700'
+                  }`}>
+                    {executionMessage.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span>{executionMessage.text}</span>
+                  </div>
+                )}
+
                 <button
-                  onClick={() => {
-                    if (onExecuteTrade) {
-                      onExecuteTrade(data.symbol, {
-                        entry_price: data.current_price,
-                        stop_loss: data.execution_setup.stop_loss_price,
-                        tp1: data.execution_setup.tp1_price,
-                        tp2: data.execution_setup.tp2_price
-                      });
-                    }
-                  }}
-                  disabled={!data.execution_setup.can_execute}
+                  onClick={handleExecuteReversalTrade}
+                  disabled={!data.execution_setup.can_execute || isExecuting}
                   className={`w-full py-2.5 px-4 rounded-lg font-mono font-bold text-xs flex items-center justify-center gap-2 transition ${
-                    data.execution_setup.can_execute
+                    data.execution_setup.can_execute && !isExecuting
                       ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer'
                       : 'bg-gray-800/60 text-gray-500 cursor-not-allowed border border-gray-700/40'
                   }`}
                 >
-                  <Zap className="w-4 h-4" />
-                  <span>{data.execution_setup.can_execute ? 'Execute Confirmed Swing Trade' : 'Entry Locked (Awaiting Confirmation)'}</span>
+                  {isExecuting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                      <span>Executing Atomic Signal...</span>
+                    </>
+                  ) : data.execution_setup.can_execute ? (
+                    <>
+                      <Zap className="w-4 h-4" />
+                      <span>Execute Confirmed Swing Trade (Spot Paper)</span>
+                    </>
+                  ) : data.lifecycle_guard?.lifecycle_state === 'TARGET_REACHED_BEFORE_ENTRY' ? (
+                    <>
+                      <Lock className="w-4 h-4 text-rose-400" />
+                      <span>Target Reached Before Entry (Locked)</span>
+                    </>
+                  ) : data.lifecycle_guard?.lifecycle_state === 'MISSED_ENTRY' ? (
+                    <>
+                      <Lock className="w-4 h-4 text-amber-400" />
+                      <span>Missed Entry: Runaway Price (Locked)</span>
+                    </>
+                  ) : data.lifecycle_guard?.lifecycle_state === 'POSITION_OPEN' ? (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+                      <span>Position Already Active (Locked)</span>
+                    </>
+                  ) : data.lifecycle_guard?.lifecycle_state === 'EXPIRED' ? (
+                    <>
+                      <Clock className="w-4 h-4 text-gray-400" />
+                      <span>Signal Expired (&gt;2 Hours) (Locked)</span>
+                    </>
+                  ) : data.lifecycle_guard?.lifecycle_state === 'STALE_MARKET_DATA' ? (
+                    <>
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      <span>Feed Stale (&gt;180s) (Locked)</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4 text-gray-400" />
+                      <span>Entry Locked (Awaiting Confirmation)</span>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -603,10 +829,11 @@ export default function BottomIntelligenceView({
                   <th className="py-3 px-4">Asset</th>
                   <th className="py-3 px-4">Price</th>
                   <th className="py-3 px-4">Causal State</th>
-                  <th className="py-3 px-4 text-center">Exhaustion Score</th>
-                  <th className="py-3 px-4 text-center">Stabilization Score</th>
+                  <th className="py-3 px-4">Lifecycle Guard</th>
+                  <th className="py-3 px-4 text-center">Exhaustion</th>
+                  <th className="py-3 px-4 text-center">Stabilization</th>
                   <th className="py-3 px-4">Est. Floor</th>
-                  <th className="py-3 px-4">Distance to Floor</th>
+                  <th className="py-3 px-4">Distance</th>
                   <th className="py-3 px-4">Target Prob</th>
                   <th className="py-3 px-4 text-right">Action</th>
                 </tr>
@@ -630,6 +857,33 @@ export default function BottomIntelligenceView({
                     </td>
                     <td className="py-3 px-4">
                       {getStateBadge(item.state, item.state_label)}
+                    </td>
+                    <td className="py-3 px-4">
+                      {item.is_actionable ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300 bg-emerald-950/80 border border-emerald-700/80 px-2 py-0.5 rounded">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          READY TO EXECUTE
+                        </span>
+                      ) : item.lifecycle_state === 'TARGET_REACHED_BEFORE_ENTRY' ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-300 bg-rose-950/80 border border-rose-800/80 px-2 py-0.5 rounded">
+                          <AlertTriangle className="w-3 h-3 text-rose-400" />
+                          Target Reached
+                        </span>
+                      ) : item.lifecycle_state === 'MISSED_ENTRY' ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-950/80 border border-amber-800/80 px-2 py-0.5 rounded">
+                          <AlertTriangle className="w-3 h-3 text-amber-400" />
+                          Missed Entry
+                        </span>
+                      ) : item.lifecycle_state === 'POSITION_OPEN' ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-300 bg-cyan-950/80 border border-cyan-800/80 px-2 py-0.5 rounded">
+                          <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                          In Position
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-gray-500">
+                          {item.lifecycle_label || item.lifecycle_state || 'Standby'}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-center">
                       <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${

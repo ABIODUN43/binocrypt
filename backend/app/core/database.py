@@ -120,6 +120,52 @@ async def init_db():
                 archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # BR-008: Signal Lifecycle, Entry Timing Intelligence & Execution Guard
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS signal_lifecycle_records (
+                signal_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                strategy_id TEXT NOT NULL DEFAULT 'BR007_REVERSAL',
+                direction TEXT NOT NULL DEFAULT 'LONG',
+                lifecycle_state TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                confirmed_at TIMESTAMP,
+                confirmation_candle_time INTEGER,
+                last_evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_market_data_at TIMESTAMP,
+                data_source TEXT NOT NULL DEFAULT 'BINANCE_SPOT',
+                expires_at TIMESTAMP,
+                
+                floor_price REAL NOT NULL,
+                invalidation_price REAL NOT NULL,
+                entry_zone_min REAL NOT NULL,
+                entry_zone_max REAL NOT NULL,
+                tp1_price REAL NOT NULL,
+                tp2_price REAL NOT NULL,
+                original_rr REAL NOT NULL,
+                
+                evaluated_price REAL,
+                evaluated_rr REAL,
+                is_actionable INTEGER DEFAULT 0,
+                action_recommendation TEXT,
+                eligibility_reason TEXT,
+                
+                consumed INTEGER DEFAULT 0,
+                consumed_at TIMESTAMP,
+                client_order_id TEXT,
+                order_id INTEGER,
+                position_id INTEGER
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_sig_sym_state ON signal_lifecycle_records(symbol, lifecycle_state)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_sig_created ON signal_lifecycle_records(created_at)")
+
+        # Safe migration for signal_id in paper_positions
+        try:
+            await db.execute("ALTER TABLE paper_positions ADD COLUMN signal_id TEXT")
+        except Exception:
+            pass
         
         # Check if account row exists, if not initialize with $40 default
         async with db.execute("SELECT COUNT(*) FROM paper_account") as cursor:

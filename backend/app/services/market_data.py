@@ -1,4 +1,4 @@
-﻿import httpx
+import httpx
 import asyncio
 import time
 import math
@@ -249,7 +249,7 @@ class MarketDataService:
                     raw = res.json()
                     if isinstance(raw, list) and len(raw) > 0:
                         formatted = [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in raw]
-                        self.kline_cache[cache_key] = {"time": now, "data": formatted}
+                        self.kline_cache[cache_key] = {"time": now, "data": formatted, "source": "BINANCE", "source_url": self.primary_url}
                         return formatted
         except Exception:
             pass
@@ -263,7 +263,7 @@ class MarketDataService:
                     raw = res.json()
                     if isinstance(raw, list) and len(raw) > 0:
                         formatted = [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in raw]
-                        self.kline_cache[cache_key] = {"time": now, "data": formatted}
+                        self.kline_cache[cache_key] = {"time": now, "data": formatted, "source": "BINANCE_US", "source_url": self.us_url}
                         return formatted
         except Exception:
             pass
@@ -282,15 +282,39 @@ class MarketDataService:
                             [int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])]
                             for k in reversed(raw)
                         ]
-                        self.kline_cache[cache_key] = {"time": now, "data": formatted}
+                        self.kline_cache[cache_key] = {"time": now, "data": formatted, "source": "BYBIT", "source_url": self.bybit_url}
                         return formatted
         except Exception:
             pass
 
         # Gateway 4: High-Fidelity Synthetic Candlestick Series
         synthetic = self._generate_synthetic_candles(sym, interval, limit)
-        self.kline_cache[cache_key] = {"time": now, "data": synthetic}
+        self.kline_cache[cache_key] = {"time": now, "data": synthetic, "source": "SYNTHETIC", "source_url": "SYNTHETIC_GENERATOR"}
         return synthetic
+
+    async def get_klines_metadata(self, symbol: str, interval: str = "1h", limit: int = 100) -> Dict[str, Any]:
+        """Fetch klines and return both candles and feed provenance metadata."""
+        sym = symbol.upper().replace("/", "").replace("-", "")
+        cache_key = f"{sym}_{interval}_{limit}"
+        candles = await self.get_klines(symbol, interval, limit)
+        cached = self.kline_cache.get(cache_key, {})
+        source = cached.get("source", "BINANCE")
+        cached_at = cached.get("time", time.time())
+        latest_candle_time = candles[-1][0] if candles else 0
+        now = time.time()
+        age_seconds = round(now - cached_at, 1)
+        is_stale = (age_seconds > 180.0) or (source == "SYNTHETIC")
+        
+        return {
+            "symbol": sym,
+            "candles": candles,
+            "source": source,
+            "cached_at": cached_at,
+            "age_seconds": age_seconds,
+            "latest_candle_time": latest_candle_time,
+            "is_stale": is_stale,
+            "feed_status": "FEED_STALE" if is_stale else ("FEED_FALLBACK" if source != "BINANCE" else "LIVE_HEALTHY")
+        }
 
     def _generate_synthetic_candles(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
         base_info = BENCHMARK_DEFAULTS.get(symbol, {"price": 1.0, "vol": 10_000_000.0})

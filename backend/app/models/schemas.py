@@ -113,6 +113,8 @@ class PaperOrderRequest(BaseModel):
     tp1: Optional[float] = None
     tp2: Optional[float] = None
     custom_notional_usd: Optional[float] = None
+    signal_id: Optional[str] = None
+    client_order_id: Optional[str] = None
 
 class PaperPosition(BaseModel):
     id: int

@@ -94,6 +94,13 @@ export const api = {
 
   // BR-007 Swing Reversal & Bottom-Formation Intelligence
   getReversalIntelligence: (symbol) => apiRequest(`/reversal/${encodeURIComponent(symbol)}`),
-  getReversalScanner: () => apiRequest('/reversal/scanner')
+  getReversalScanner: () => apiRequest('/reversal/scanner'),
+
+  // BR-008 Signal Lifecycle & Execution Guard
+  executeReversalSignal: (data) => apiRequest('/reversal/execute', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
+  getReversalSignalHistory: (symbol) => apiRequest(`/reversal/signals/${encodeURIComponent(symbol)}`)
 };
 

@@ -329,7 +329,12 @@ export default function App() {
           <BottomIntelligenceView
             selectedSymbol={selectedSymbol}
             onSelectCoin={handleSelectCoin}
-            onExecuteTrade={handleQuickPaperTrade}
+            onExecuteTrade={(sym, res) => {
+              if (res?.fill_price) {
+                showToast(`Reversal paper order filled: ${sym} @ $${res.fill_price} ($${res.notional_usd?.toFixed(2)} USDT)`);
+              }
+              loadAllData(false);
+            }}
           />
         )}
 

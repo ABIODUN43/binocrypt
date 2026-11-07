@@ -235,13 +235,13 @@ class PaperTradingService:
             new_cash = acc.available_cash - notional - entry_fee
             await db.execute("UPDATE paper_account SET available_cash = ? WHERE id = 1", (new_cash,))
             
-            # Insert position
+            # Insert position (with optional signal_id)
             cursor = await db.execute("""
                 INSERT INTO paper_positions 
                 (symbol, side, status, entry_price, current_price, quantity, notional_usd, 
-                 stop_loss, tp1, tp2, risk_amount, fees_paid, opened_at)
-                VALUES (?, 'BUY', 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (req.symbol.upper(), entry_price, entry_price, quantity, notional, stop_loss, tp1, tp2, risk_amt, entry_fee))
+                 stop_loss, tp1, tp2, risk_amount, fees_paid, signal_id, opened_at)
+                VALUES (?, 'BUY', 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (req.symbol.upper(), entry_price, entry_price, quantity, notional, stop_loss, tp1, tp2, risk_amt, entry_fee, getattr(req, 'signal_id', None)))
             
             pos_id = cursor.lastrowid
             await db.commit()
